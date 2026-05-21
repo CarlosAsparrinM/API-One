@@ -1,6 +1,15 @@
 # API-ONE — Referencia y Casos de Uso
 
-API-ONE es un enrutador de múltiples proveedores de IA que expone una API compatible con OpenAI. Envía solicitudes a los proveedores configurados siguiendo una prioridad, y cambia automáticamente a un proveedor alternativo si el primero falla o está limitado.
+API-ONE es un proxy ligero y compatible con la API de OpenAI que permite enviar solicitudes de chat y embeddings a múltiples proveedores con una política de fallback. Proporciona una capa unificada para orquestar proveedores (fallback/rotación), autenticación por claves, límites de uso configurables y un almacén de contexto en memoria para mantener conversaciones sin depender de una base de datos. Está pensado para desarrollos y despliegues sencillos donde se necesita interoperabilidad entre APIs de IA sin atarse a un proveedor único.
+
+## Puntos clave:
+
+- Endpoints: ofrece rutas OpenAI-like como /v1/chat/completions, /v1/embeddings y /v1/models.
+- Contexto: almacenamiento en memoria (no persiste por defecto); configurables vía variables de entorno.
+- Autenticación: control por claves (API_AUTH_KEYS) para proteger los endpoints.
+- Fallback entre proveedores: providerManager orquesta llamadas y aplica alternativas si un proveedor falla.
+- Observabilidad: health checks y métricas básicas disponibles para monitoreo.
+- Uso previsto: integración como proxy o backend para aplicaciones que requieren compatibilidad OpenAI y tolerancia a fallos entre proveedores.
 
 **Autenticación:** Las rutas montadas bajo `/v1` requieren el encabezado `Authorization: Bearer <api_key>`.
 
