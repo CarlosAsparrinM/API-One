@@ -2,16 +2,16 @@ const axios = require('axios');
 const BaseProvider = require('./baseProvider');
 const logger = require('../../utils/logger');
 
-class GroqProvider extends BaseProvider {
+class CerebrasProvider extends BaseProvider {
   constructor() {
-    super('groq', ['chat', 'completion']);
-    this.apiKey = process.env.GROQ_API_KEY;
-    this.baseURL = 'https://api.groq.com/openai/v1';
-    this.defaultModel = 'llama-3.1-8b-instant';
+    super('cerebras', ['chat', 'completion']);
+    this.apiKey = process.env.CEREBRAS_API_KEY;
+    this.baseURL = 'https://api.cerebras.ai/v1';
+    this.defaultModel = process.env.CEREBRAS_MODEL || 'llama-3.3-70b';
   }
 
   isConfigured() {
-    return !!this.apiKey && this.apiKey !== 'your_groq_key';
+    return !!this.apiKey && this.apiKey !== 'your_cerebras_key';
   }
 
   async execute(type, params) {
@@ -23,7 +23,6 @@ class GroqProvider extends BaseProvider {
         Authorization: `Bearer ${this.apiKey}`,
         'Content-Type': 'application/json',
       },
-      timeout: 60_000,
     });
 
     try {
@@ -39,8 +38,9 @@ class GroqProvider extends BaseProvider {
     const payload = {
       model: params.model || this.defaultModel,
       messages: params.messages || [{ role: 'user', content: params.prompt }],
-      temperature: params.temperature ?? 0.7,
-      max_tokens: params.maxTokens ?? 2000,
+      temperature: params.temperature || 0.7,
+      max_tokens: params.maxTokens || 2000,
+      top_p: 0.95,
       ...params.additionalParams,
     };
 
@@ -49,9 +49,9 @@ class GroqProvider extends BaseProvider {
 
     return {
       success: true,
-      provider: 'groq',
-      response: result.choices?.[0]?.message?.content ?? '',
-      model: result.model || payload.model,
+      provider: 'cerebras',
+      response: result.choices[0].message.content,
+      model: result.model,
       tokensUsed: result.usage?.total_tokens || 0,
       raw: result,
     };
@@ -62,12 +62,12 @@ class GroqProvider extends BaseProvider {
     const data = error.response?.data;
     const message = data?.error?.message || error.message;
 
-    const err = new Error(`Groq Error: ${message}`);
+    const err = new Error(`Cerebras Error: ${message}`);
     err.status = status;
     err.originalError = error;
 
     logger.error({
-      provider: 'groq',
+      provider: 'cerebras',
       status,
       message,
       type: data?.error?.type,
@@ -77,4 +77,4 @@ class GroqProvider extends BaseProvider {
   }
 }
 
-module.exports = GroqProvider;
+module.exports = CerebrasProvider;

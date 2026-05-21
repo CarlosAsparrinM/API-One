@@ -1,38 +1,46 @@
 require('dotenv').config();
+
 const express = require('express');
-const AIRouter = require('./routes/aiRouter');
-const OpenAIRouter = require('./routes/openaiRouter');
-const HealthRouter = require('./routes/healthRouter');
+
 const logger = require('./utils/logger');
-const errorHandler = require('./middleware/errorHandler');
 const corsMiddleware = require('./middleware/cors');
 const requestTelemetry = require('./middleware/requestTelemetry');
-const authApiKey = require('./middleware/authApiKey');
 const rateLimit = require('./middleware/rateLimit');
-const { initializeProviders } = require('./services/providerManager');
+const authApiKey = require('./middleware/authApiKey');
+const errorHandler = require('./middleware/errorHandler');
+
+const healthRouter = require('./routes/healthRouter');
+const openaiRouter = require('./routes/openaiRouter');
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+app.disable('x-powered-by');
 
-// Middleware
-app.use(requestTelemetry);
+const PORT = Number(process.env.PORT || 3000);
+
 app.use(corsMiddleware);
 app.use(express.json({ limit: process.env.REQUEST_BODY_LIMIT || '2mb' }));
-app.use(express.urlencoded({ extended: true }));
+app.use(requestTelemetry);
+app.use(rateLimit);
 
-// Initialize providers
-initializeProviders();
+// Public routes
+app.use('/', healthRouter);
 
-// Routes
-app.use('/health', HealthRouter);
-app.use('/api', authApiKey, rateLimit, AIRouter);
-app.use('/v1', authApiKey, rateLimit, OpenAIRouter);
+// Protected routes
+app.use('/v1', authApiKey, openaiRouter);
 
-// Error handling middleware
+// Error handling
 app.use(errorHandler);
 
 app.listen(PORT, () => {
-  logger.info(`🚀 API-One Server running on port ${PORT}`);
+  logger.info({
+    type: 'startup',
+    message: `API-ONE listening on http://localhost:${PORT}`,
+    endpoints: {
+      health: `http://localhost:${PORT}/health`,
+      stats: `http://localhost:${PORT}/stats`,
+      chat: `http://localhost:${PORT}/v1/chat/completions`,
+      embeddings: `http://localhost:${PORT}/v1/embeddings`,
+      models: `http://localhost:${PORT}/v1/models`,
+    },
+  });
 });
-
-module.exports = app;

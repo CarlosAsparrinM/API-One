@@ -1,53 +1,41 @@
-const logger = require('../../utils/logger');
-
 class BaseProvider {
-  constructor(name, type = ['chat', 'completion']) {
+  constructor(name, supportedTypes = []) {
     this.name = name;
-    this.type = type;
-    this.capabilities = {
-      chat: type.includes('chat'),
-      completion: type.includes('completion'),
-      embedding: type.includes('embedding'),
-    };
+    this.supportedTypes = supportedTypes;
   }
 
-  isConfigured() {
-    throw new Error('isConfigured must be implemented');
-  }
-
-  async execute(type, params) {
-    throw new Error('execute must be implemented');
+  supports(type) {
+    return this.supportedTypes.includes(type);
   }
 
   validateParams(type, params) {
-    if (!params) {
-      throw new Error('Parameters cannot be empty');
+    if (!this.supports(type)) {
+      throw new Error(`${this.name} does not support operation: ${type}`);
     }
 
-    if (type === 'chat' || type === 'completion') {
-      if (!params.prompt && !params.messages) {
-        throw new Error('Either prompt or messages must be provided');
+    if (!params || typeof params !== 'object') {
+      throw new Error('Missing params');
+    }
+
+    if (type === 'chat') {
+      if (!Array.isArray(params.messages) || params.messages.length === 0) {
+        throw new Error('chat requires non-empty messages array');
+      }
+    }
+
+    if (type === 'completion') {
+      const hasPrompt = typeof params.prompt === 'string' && params.prompt.trim();
+      const hasMessages = Array.isArray(params.messages) && params.messages.length > 0;
+      if (!hasPrompt && !hasMessages) {
+        throw new Error('completion requires prompt or messages');
       }
     }
 
     if (type === 'embedding') {
-      if (!params.text) {
-        throw new Error('Text is required for embeddings');
+      if (typeof params.text !== 'string' || !params.text.trim()) {
+        throw new Error('embedding requires non-empty text');
       }
     }
-
-    return true;
-  }
-
-  isRateLimitError(error) {
-    const message = error.message?.toLowerCase() || '';
-    const status = error.status || error.response?.status;
-    return status === 429 || message.includes('rate limit') || message.includes('quota');
-  }
-
-  isAuthError(error) {
-    const status = error.status || error.response?.status;
-    return status === 401 || status === 403;
   }
 }
 

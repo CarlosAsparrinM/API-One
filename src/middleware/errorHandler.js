@@ -1,39 +1,34 @@
 const logger = require('../utils/logger');
 
-const errorHandler = (err, req, res, next) => {
-  const status = err.status || 500;
-  const message = err.message || 'Internal Server Error';
+function errorHandler(err, req, res, next) {
+  const status = Number(err?.status || err?.code) || 500;
+  const requestId = req?.requestId || null;
 
   logger.error({
-    message,
-    stack: err.stack,
-    path: req.path,
-    method: req.method,
+    type: 'unhandled_error',
+    requestId,
     status,
-    requestId: req.requestId,
-    fallbackTrace: err.fallbackTrace || null,
+    message: err?.message || String(err),
+    stack: err?.stack,
+    path: req?.originalUrl,
+    method: req?.method,
   });
 
-  if (req.originalUrl.startsWith('/v1/')) {
-    return res.status(status).json({
-      error: {
-        message,
-        type: status >= 500 ? 'server_error' : 'invalid_request_error',
-        param: null,
-        code: status,
-        request_id: req.requestId,
-      },
-    });
+  const payload = {
+    error: {
+      message: err?.message || 'Internal server error',
+      type: status >= 500 ? 'server_error' : 'request_error',
+      code: status,
+      request_id: requestId,
+      fallback_trace: err?.fallbackTrace || err?.fallback_trace || undefined,
+    },
+  };
+
+  if (res.headersSent) {
+    return next(err);
   }
 
-  return res.status(status).json({
-    error: {
-      status,
-      message,
-      timestamp: new Date().toISOString(),
-      requestId: req.requestId,
-    },
-  });
-};
+  return res.status(status).json(payload);
+}
 
 module.exports = errorHandler;

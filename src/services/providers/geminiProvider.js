@@ -2,12 +2,39 @@ const axios = require('axios');
 const BaseProvider = require('./baseProvider');
 const logger = require('../../utils/logger');
 
+function normalizeSystem(messages) {
+  const systemParts = [];
+  for (const m of messages || []) {
+    if (m?.role === 'system' && typeof m.content === 'string' && m.content.trim()) {
+      systemParts.push(m.content.trim());
+    }
+  }
+  return systemParts.join('\n\n') || null;
+}
+
+function toGeminiContents(messages) {
+  const contents = [];
+  for (const m of messages || []) {
+    if (!m || typeof m.content !== 'string') continue;
+    const text = m.content.trim();
+    if (!text) continue;
+
+    if (m.role === 'user') {
+      contents.push({ role: 'user', parts: [{ text }] });
+    } else if (m.role === 'assistant') {
+      contents.push({ role: 'model', parts: [{ text }] });
+    }
+  }
+  return contents;
+}
+
 class GeminiProvider extends BaseProvider {
   constructor() {
     super('gemini', ['chat', 'completion', 'embedding']);
     this.apiKey = process.env.GEMINI_API_KEY;
-    this.baseURL = 'https://generativelanguage.googleapis.com/v1beta/openai';
+    this.baseURL = 'https://generativelanguage.googleapis.com/v1beta';
     this.defaultModel = 'gemini-2.0-flash';
+    this.defaultEmbeddingModel = 'models/embedding-001';
   }
 
   isConfigured() {
@@ -17,63 +44,85 @@ class GeminiProvider extends BaseProvider {
   async execute(type, params) {
     this.validateParams(type, params);
 
-    const client = axios.create({
-      baseURL: this.baseURL,
-      headers: {
-        'Content-Type': 'application/json',
-      },
-    });
-
     try {
+      if (type === 'embedding') {
+        return await this.handleEmbedding(params);
+      }
       if (type === 'chat' || type === 'completion') {
-        return await this.handleCompletion(client, params);
-      } else if (type === 'embedding') {
-        return await this.handleEmbedding(client, params);
+        return await this.handleChat(params);
       }
     } catch (error) {
       this.handleError(error);
     }
   }
 
-  async handleCompletion(client, params) {
+  async handleChat(params) {
+    const messages = params.messages || [{ role: 'user', content: params.prompt }];
+    const model = params.model || this.defaultModel;
+    const systemText = normalizeSystem(messages);
+    const contents = toGeminiContents(messages);
+
+    const url = `${this.baseURL}/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(this.apiKey)}`;
+
     const payload = {
-      model: params.model || this.defaultModel,
-      messages: params.messages || [{ role: 'user', content: params.prompt }],
-      temperature: params.temperature || 0.7,
-      max_tokens: params.maxTokens || 2000,
+      contents,
+      generationConfig: {
+        temperature: params.temperature ?? 0.7,
+        maxOutputTokens: params.maxTokens ?? 2000,
+      },
+      ...(systemText
+        ? { systemInstruction: { parts: [{ text: systemText }] } }
+        : {}),
       ...params.additionalParams,
     };
 
-    const url = `/chat/completions?key=${this.apiKey}`;
-    const response = await client.post(url, payload);
-    const result = response.data;
+    const response = await axios.post(url, payload, {
+      headers: { 'Content-Type': 'application/json' },
+      timeout: 60_000,
+    });
+
+    const data = response.data;
+    const text =
+      data?.candidates?.[0]?.content?.parts
+        ?.map((p) => p?.text || '')
+        .join('')
+        .trim() || '';
 
     return {
       success: true,
       provider: 'gemini',
-      response: result.choices[0].message.content,
-      model: result.model,
-      tokensUsed: result.usage?.total_tokens || 0,
-      raw: result,
+      response: text,
+      model,
+      tokensUsed: data?.usageMetadata?.totalTokenCount || 0,
+      raw: data,
     };
   }
 
-  async handleEmbedding(client, params) {
-    const url = `/embeddings?key=${this.apiKey}`;
+  async handleEmbedding(params) {
+    const model = params.model || this.defaultEmbeddingModel;
+    const url = `${this.baseURL}/models/${encodeURIComponent(model)}:embedContent?key=${encodeURIComponent(this.apiKey)}`;
+
     const payload = {
-      model: params.model || 'models/embedding-001',
-      input: params.text,
+      content: {
+        parts: [{ text: params.text }],
+      },
     };
 
-    const response = await client.post(url, payload);
-    const result = response.data;
+    const response = await axios.post(url, payload, {
+      headers: { 'Content-Type': 'application/json' },
+      timeout: 60_000,
+    });
+
+    const data = response.data;
+    const embedding = data?.embedding?.values;
 
     return {
       success: true,
       provider: 'gemini',
-      embedding: result.data[0].embedding,
-      tokensUsed: result.usage?.total_tokens || 0,
-      raw: result,
+      embedding: Array.isArray(embedding) ? embedding : [],
+      model,
+      tokensUsed: data?.usageMetadata?.totalTokenCount || 0,
+      raw: data,
     };
   }
 
@@ -90,7 +139,6 @@ class GeminiProvider extends BaseProvider {
       provider: 'gemini',
       status,
       message,
-      type: data?.error?.type,
     });
 
     throw err;

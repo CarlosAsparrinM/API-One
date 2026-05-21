@@ -1,185 +1,184 @@
 const logger = require('../utils/logger');
-const GeminiProvider = require('./providers/geminiProvider');
+const { resolveModelForProvider, getDefaultModel } = require('../config/modelCatalog');
+
+const SambanovaProvider = require('./providers/sambanovaProvider');
+const CerebrasProvider = require('./providers/cerebrasProvider');
 const GroqProvider = require('./providers/groqProvider');
-const ProviderStats = require('../models/ProviderStats');
-const { resolveModelForProvider } = require('../config/modelCatalog');
+const GeminiProvider = require('./providers/geminiProvider');
+
+function parsePriority() {
+  const raw = process.env.AI_PROVIDER_PRIORITY || 'sambanova,cerebras,groq,gemini';
+  return raw
+    .split(',')
+    .map((p) => p.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+function isEnabled(providerName) {
+  const key = `${providerName.toUpperCase()}_ENABLED`;
+  const raw = process.env[key];
+  if (raw === undefined) return true;
+  return String(raw).toLowerCase() === 'true';
+}
 
 class ProviderManager {
   constructor() {
-    this.providers = [];
-    this.providerStats = new Map();
-    this.providerPriority = (process.env.AI_PROVIDER_PRIORITY || 'groq,gemini')
-      .split(',')
-      .map(p => p.trim());
-    this.metrics = {
-      totalRequests: 0,
-      totalFailures: 0,
-      totalFallbacks: 0,
-      totalLatencyMs: 0,
-      lastRequestAt: null,
+    this.providers = {
+      sambanova: new SambanovaProvider(),
+      cerebras: new CerebrasProvider(),
+      groq: new GroqProvider(),
+      gemini: new GeminiProvider(),
+    };
+
+    this.stats = Object.fromEntries(
+      Object.keys(this.providers).map((name) => [
+        name,
+        {
+          attempts: 0,
+          successes: 0,
+          failures: 0,
+          lastError: null,
+          lastErrorAt: null,
+          lastSuccessAt: null,
+        },
+      ])
+    );
+  }
+
+  getProviderOrder() {
+    const desired = parsePriority();
+    const all = Object.keys(this.providers);
+    const order = [];
+
+    for (const p of desired) {
+      if (all.includes(p) && !order.includes(p)) order.push(p);
+    }
+    for (const p of all) {
+      if (!order.includes(p)) order.push(p);
+    }
+
+    return order;
+  }
+
+  getStats() {
+    const order = this.getProviderOrder();
+    return {
+      provider_priority: order,
+      providers: order.map((name) => {
+        const provider = this.providers[name];
+        const enabled = isEnabled(name);
+        const configured = typeof provider.isConfigured === 'function' ? provider.isConfigured() : true;
+
+        return {
+          name,
+          enabled,
+          configured,
+          supportedTypes: provider.supportedTypes || [],
+          stats: this.stats[name],
+        };
+      }),
     };
   }
 
-  initializeProviders() {
-    logger.info('Initializing AI providers...');
-
-    if (process.env.GROQ_ENABLED !== 'false') {
-      const groq = new GroqProvider();
-      if (groq.isConfigured()) {
-        this.providers.push(groq);
-        this.providerStats.set('groq', new ProviderStats('groq'));
-        logger.info('✓ Groq provider initialized (FREE)');
-      }
-    }
-
-    if (process.env.GEMINI_ENABLED !== 'false') {
-      const gemini = new GeminiProvider();
-      if (gemini.isConfigured()) {
-        this.providers.push(gemini);
-        this.providerStats.set('gemini', new ProviderStats('gemini'));
-        logger.info('✓ Gemini provider initialized (FREE tier available)');
-      }
-    }
-
-    if (this.providers.length === 0) {
-      logger.warn('⚠️  No AI providers were configured. Please check your .env file.');
-    } else {
-      logger.info(`✓ Total providers available: ${this.providers.length}`);
-    }
+  _markAttempt(provider) {
+    this.stats[provider].attempts += 1;
   }
-
-  getSortedProviders() {
-    return this.providers.sort((a, b) => {
-      const priorityA = this.providerPriority.indexOf(a.name);
-      const priorityB = this.providerPriority.indexOf(b.name);
-      return priorityA - priorityB;
-    });
+  _markSuccess(provider) {
+    this.stats[provider].successes += 1;
+    this.stats[provider].lastSuccessAt = new Date().toISOString();
+    this.stats[provider].lastError = null;
   }
-
-  getHealthyProviders() {
-    return this.getSortedProviders().filter(p => {
-      const stats = this.providerStats.get(p.name);
-      return stats && stats.isHealthy;
-    });
+  _markFailure(provider, err) {
+    this.stats[provider].failures += 1;
+    this.stats[provider].lastError = err?.message || String(err);
+    this.stats[provider].lastErrorAt = new Date().toISOString();
   }
 
   async executeWithFallback(type, params) {
-    const requestStart = Date.now();
-    this.metrics.totalRequests += 1;
-    this.metrics.lastRequestAt = new Date();
-
-    const healthyProviders = this.getHealthyProviders();
-
-    if (healthyProviders.length === 0) {
-      const unavailableError = new Error('No healthy AI providers available');
-      unavailableError.status = 503;
-      throw unavailableError;
-    }
-
-    let lastError = null;
+    const order = this.getProviderOrder();
     const fallbackTrace = [];
 
-    for (const provider of healthyProviders) {
-      const providerModel = resolveModelForProvider(params.model, provider.name, type);
-      if (providerModel === null) {
+    // Normalize model: api-fallback behaves like auto
+    const requestedModel =
+      !params?.model || params.model === 'api-fallback' ? 'auto' : String(params.model);
+
+    let lastErr = null;
+
+    for (const providerName of order) {
+      const provider = this.providers[providerName];
+      if (!provider) continue;
+
+      const enabled = isEnabled(providerName);
+      const configured = typeof provider.isConfigured === 'function' ? provider.isConfigured() : true;
+      const supports = typeof provider.supports === 'function' ? provider.supports(type) : true;
+
+      if (!enabled || !configured || !supports) {
         fallbackTrace.push({
-          provider: provider.name,
+          provider: providerName,
           status: 'skipped',
-          reason: `Requested model "${params.model}" targets another provider.`,
+          reason: !enabled ? 'disabled' : !configured ? 'not_configured' : 'unsupported',
         });
         continue;
       }
 
-      const providerStart = Date.now();
-      try {
-        logger.info(`Attempting ${type} with ${provider.name} (${providerModel})`);
-        const result = await provider.execute(type, {
-          ...params,
-          model: providerModel,
-        });
-        
-        // Record success
-        const stats = this.providerStats.get(provider.name);
-        stats.recordSuccess(result.tokensUsed || 0);
-
-        const attemptLatencyMs = Date.now() - providerStart;
+      const upstreamModel = resolveModelForProvider(requestedModel, providerName, type) || getDefaultModel(providerName, type);
+      if (!upstreamModel) {
         fallbackTrace.push({
-          provider: provider.name,
-          model: providerModel,
-          status: 'success',
-          latencyMs: attemptLatencyMs,
+          provider: providerName,
+          status: 'skipped',
+          reason: 'model_not_applicable',
         });
-        this.metrics.totalLatencyMs += Date.now() - requestStart;
-        if (fallbackTrace.filter((attempt) => attempt.status === 'failed').length > 0) {
-          this.metrics.totalFallbacks += 1;
-        }
-        
-        logger.info(`✓ Success with ${provider.name}`);
+        continue;
+      }
+
+      const execParams = {
+        ...params,
+        model: upstreamModel,
+      };
+
+      const start = Date.now();
+      this._markAttempt(providerName);
+
+      try {
+        const result = await provider.execute(type, execParams);
+        const latencyMs = Date.now() - start;
+
+        this._markSuccess(providerName);
+        fallbackTrace.push({ provider: providerName, status: 'success', latencyMs });
+
         return {
           ...result,
-          usedProvider: provider.name,
-          requestLatencyMs: Date.now() - requestStart,
+          usedProvider: providerName,
+          requestLatencyMs: latencyMs,
           fallbackTrace,
         };
-      } catch (error) {
-        lastError = error;
-        const stats = this.providerStats.get(provider.name);
-        stats.recordFailure(error);
+      } catch (err) {
+        const latencyMs = Date.now() - start;
+        lastErr = err;
+        this._markFailure(providerName, err);
         fallbackTrace.push({
-          provider: provider.name,
-          model: providerModel,
-          status: 'failed',
-          code: error.status || error.response?.status || 500,
-          message: error.message,
-          latencyMs: Date.now() - providerStart,
+          provider: providerName,
+          status: 'error',
+          latencyMs,
+          error: err?.message || String(err),
+          statusCode: err?.status || err?.originalError?.response?.status || null,
         });
-        
-        logger.warn(`✗ ${provider.name} failed: ${error.message}`);
+        logger.warn({
+          type: 'provider_fallback',
+          provider: providerName,
+          operation: type,
+          message: err?.message || String(err),
+        });
+        continue;
       }
     }
 
-    this.metrics.totalFailures += 1;
-    this.metrics.totalLatencyMs += Date.now() - requestStart;
-
-    const exhaustedError = new Error(`All providers failed. Last error: ${lastError?.message}`);
-    exhaustedError.status = lastError?.status || 503;
-    exhaustedError.fallbackTrace = fallbackTrace;
-    throw exhaustedError;
-  }
-
-  getStats() {
-    const stats = {};
-    this.providerStats.forEach((stat, name) => {
-      stats[name] = stat.toString();
-    });
-    return stats;
-  }
-
-  getProvidersList() {
-    return this.providers.map(p => ({
-      name: p.name,
-      type: p.type,
-      capabilities: p.capabilities,
-      configured: true,
-    }));
-  }
-
-  getOperationalMetrics() {
-    const avgLatencyMs = this.metrics.totalRequests === 0
-      ? 0
-      : Number((this.metrics.totalLatencyMs / this.metrics.totalRequests).toFixed(2));
-
-    return {
-      totalRequests: this.metrics.totalRequests,
-      totalFailures: this.metrics.totalFailures,
-      totalFallbacks: this.metrics.totalFallbacks,
-      averageLatencyMs: avgLatencyMs,
-      lastRequestAt: this.metrics.lastRequestAt,
-    };
+    const finalError = lastErr || new Error('No provider available for this request');
+    finalError.fallbackTrace = fallbackTrace;
+    throw finalError;
   }
 }
 
-// Singleton instance
 let instance = null;
 
 function getProviderManager() {
@@ -189,12 +188,6 @@ function getProviderManager() {
   return instance;
 }
 
-function initializeProviders() {
-  const manager = getProviderManager();
-  manager.initializeProviders();
-}
-
 module.exports = {
   getProviderManager,
-  initializeProviders,
 };
