@@ -7,7 +7,7 @@ class CerebrasProvider extends BaseProvider {
     super('cerebras', ['chat', 'completion']);
     this.apiKey = process.env.CEREBRAS_API_KEY;
     this.baseURL = 'https://api.cerebras.ai/v1';
-    this.defaultModel = process.env.CEREBRAS_MODEL || 'llama-3.3-70b';
+    this.defaultModel = process.env.CEREBRAS_MODEL || 'gpt-oss-120b';
   }
 
   isConfigured() {

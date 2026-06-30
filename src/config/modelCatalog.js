@@ -44,6 +44,12 @@ const MODEL_CATALOG = [
   },
   // Cerebras
   {
+    id: 'cerebras:qwen-3-235b-instruct',
+    provider: 'cerebras',
+    upstreamModel: 'qwen-3-235b-instruct',
+    capabilities: ['chat', 'completion'],
+  },
+  {
     id: 'cerebras:llama-3.1-70b',
     provider: 'cerebras',
     upstreamModel: 'llama-3.1-70b',
@@ -107,12 +113,12 @@ const DEFAULT_PROVIDER_MODELS = {
     completion: 'Meta-Llama-3.3-70B-Instruct',
   },
   cerebras: {
-    chat: 'llama-3.1-70b',
-    completion: 'llama-3.1-70b',
+    chat: 'qwen-3-235b-instruct',
+    completion: 'qwen-3-235b-instruct',
   },
   groq: {
-    chat: 'llama-3.1-8b-instant',
-    completion: 'llama-3.1-8b-instant',
+    chat: 'llama-3.3-70b-versatile',
+    completion: 'llama-3.3-70b-versatile',
   },
   gemini: {
     chat: 'gemini-2.0-flash',
@@ -139,6 +145,7 @@ function getDefaultModel(providerName, operationType) {
   const envOverrides = {
     sambanova: process.env.SAMBANOVA_MODEL,
     cerebras: process.env.CEREBRAS_MODEL,
+    groq: process.env.GROQ_MODEL,
   };
   const envModel = envOverrides[providerName];
   if (envModel) {

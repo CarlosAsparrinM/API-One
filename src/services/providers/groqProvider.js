@@ -7,7 +7,7 @@ class GroqProvider extends BaseProvider {
     super('groq', ['chat', 'completion']);
     this.apiKey = process.env.GROQ_API_KEY;
     this.baseURL = 'https://api.groq.com/openai/v1';
-    this.defaultModel = 'llama-3.1-8b-instant';
+    this.defaultModel = process.env.GROQ_MODEL || 'llama-3.3-70b-versatile';
   }
 
   isConfigured() {
