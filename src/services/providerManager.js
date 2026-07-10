@@ -1,18 +1,8 @@
 const logger = require('../utils/logger');
-const { resolveModelForProvider, getDefaultModel } = require('../config/modelCatalog');
 
-const SambanovaProvider = require('./providers/sambanovaProvider');
 const CerebrasProvider = require('./providers/cerebrasProvider');
 const GroqProvider = require('./providers/groqProvider');
 const GeminiProvider = require('./providers/geminiProvider');
-
-function parsePriority() {
-  const raw = process.env.AI_PROVIDER_PRIORITY || 'sambanova,cerebras,groq,gemini';
-  return raw
-    .split(',')
-    .map((p) => p.trim().toLowerCase())
-    .filter(Boolean);
-}
 
 function isEnabled(providerName) {
   const key = `${providerName.toUpperCase()}_ENABLED`;
@@ -24,7 +14,6 @@ function isEnabled(providerName) {
 class ProviderManager {
   constructor() {
     this.providers = {
-      sambanova: new SambanovaProvider(),
       cerebras: new CerebrasProvider(),
       groq: new GroqProvider(),
       gemini: new GeminiProvider(),
@@ -45,26 +34,9 @@ class ProviderManager {
     );
   }
 
-  getProviderOrder() {
-    const desired = parsePriority();
-    const all = Object.keys(this.providers);
-    const order = [];
-
-    for (const p of desired) {
-      if (all.includes(p) && !order.includes(p)) order.push(p);
-    }
-    for (const p of all) {
-      if (!order.includes(p)) order.push(p);
-    }
-
-    return order;
-  }
-
   getStats() {
-    const order = this.getProviderOrder();
     return {
-      provider_priority: order,
-      providers: order.map((name) => {
+      providers: Object.keys(this.providers).map((name) => {
         const provider = this.providers[name];
         const enabled = isEnabled(name);
         const configured = typeof provider.isConfigured === 'function' ? provider.isConfigured() : true;
@@ -94,19 +66,35 @@ class ProviderManager {
     this.stats[provider].lastErrorAt = new Date().toISOString();
   }
 
-  async executeWithFallback(type, params) {
-    const order = this.getProviderOrder();
+  async executeRoute(type, params) {
+    if (!params?.model) {
+      throw new Error("Client must specify a model parameter (e.g. 'groq:llama-3.3-70b-versatile')");
+    }
+
+    const requestedModels = params.model.split(',').map(m => m.trim()).filter(Boolean);
+    if (requestedModels.length === 0) {
+      throw new Error("Invalid model string. Must be a comma-separated list of 'provider:model'");
+    }
+
     const fallbackTrace = [];
-
-    // Normalize model: api-fallback behaves like auto
-    const requestedModel =
-      !params?.model || params.model === 'api-fallback' ? 'auto' : String(params.model);
-
     let lastErr = null;
 
-    for (const providerName of order) {
+    for (const requestedModel of requestedModels) {
+      if (!requestedModel.includes(':')) {
+        fallbackTrace.push({ model: requestedModel, status: 'skipped', reason: 'invalid_format' });
+        lastErr = new Error(`Model string must include provider prefix, e.g. 'groq:${requestedModel}'`);
+        continue;
+      }
+
+      const [providerName, ...modelParts] = requestedModel.split(':');
+      const upstreamModel = modelParts.join(':');
+
       const provider = this.providers[providerName];
-      if (!provider) continue;
+      if (!provider) {
+        fallbackTrace.push({ provider: providerName, model: upstreamModel, status: 'skipped', reason: 'unknown_provider' });
+        lastErr = new Error(`Unknown provider: ${providerName}`);
+        continue;
+      }
 
       const enabled = isEnabled(providerName);
       const configured = typeof provider.isConfigured === 'function' ? provider.isConfigured() : true;
@@ -115,19 +103,11 @@ class ProviderManager {
       if (!enabled || !configured || !supports) {
         fallbackTrace.push({
           provider: providerName,
+          model: upstreamModel,
           status: 'skipped',
           reason: !enabled ? 'disabled' : !configured ? 'not_configured' : 'unsupported',
         });
-        continue;
-      }
-
-      const upstreamModel = resolveModelForProvider(requestedModel, providerName, type) || getDefaultModel(providerName, type);
-      if (!upstreamModel) {
-        fallbackTrace.push({
-          provider: providerName,
-          status: 'skipped',
-          reason: 'model_not_applicable',
-        });
+        lastErr = new Error(`Provider ${providerName} is unavailable or unsupported`);
         continue;
       }
 
@@ -144,7 +124,7 @@ class ProviderManager {
         const latencyMs = Date.now() - start;
 
         this._markSuccess(providerName);
-        fallbackTrace.push({ provider: providerName, status: 'success', latencyMs });
+        fallbackTrace.push({ provider: providerName, model: upstreamModel, status: 'success', latencyMs });
 
         return {
           ...result,
@@ -158,22 +138,24 @@ class ProviderManager {
         this._markFailure(providerName, err);
         fallbackTrace.push({
           provider: providerName,
+          model: upstreamModel,
           status: 'error',
           latencyMs,
           error: err?.message || String(err),
           statusCode: err?.status || err?.originalError?.response?.status || null,
         });
         logger.warn({
-          type: 'provider_fallback',
+          type: 'provider_route_error',
           provider: providerName,
+          model: upstreamModel,
           operation: type,
           message: err?.message || String(err),
         });
-        continue;
+        continue; // Fallback to next model in the list
       }
     }
 
-    const finalError = lastErr || new Error('No provider available for this request');
+    const finalError = lastErr || new Error('No models from the requested list were successful');
     finalError.fallbackTrace = fallbackTrace;
     throw finalError;
   }

@@ -49,26 +49,26 @@ function formatChatCompletion(result, requestModel, extraMetadata = {}) {
 }
 
 router.get('/models', (req, res) => {
-  // FORM 1: Auto-fallback mode - only return 'api-fallback' model
-  const data = [
-    {
-      id: 'api-fallback',
-      object: 'model',
-      created: Math.floor(Date.now() / 1000),
-      owned_by: 'api-fallback',
-      description: 'Automatic fallback across configured AI providers (Groq → Gemini)',
-    },
-  ];
-
   res.json({
     object: 'list',
-    data,
+    data: [],
+    message: 'API-One acts as a direct router. Models must be explicitly requested using the provider prefix, e.g. "groq:llama-3.3-70b-versatile".'
   });
 });
 
 router.post('/chat/completions', async (req, res, next) => {
   try {
-    const { model = 'api-fallback', messages, temperature, max_tokens, stream = false, ...additionalParams } = req.body || {};
+    const { model, messages, temperature, max_tokens, stream = false, ...additionalParams } = req.body || {};
+
+    if (!model) {
+      return res.status(400).json({
+        error: {
+          message: 'model parameter is required (e.g. "groq:llama-3.3-70b-versatile").',
+          type: 'invalid_request_error',
+          code: 400,
+        },
+      });
+    }
 
     if (!Array.isArray(messages) || messages.length === 0) {
       return res.status(400).json({
@@ -80,16 +80,13 @@ router.post('/chat/completions', async (req, res, next) => {
       });
     }
 
-    // FORM 1: Always use 'auto' internally for automatic fallback
-    const internalModel = 'auto';
-
     // Embeddings + Retrieval context (only active when CONTEXT_ENABLED=true
     // and a conversation_id is provided by the client)
     const { conversationId, messagesForModel, contextMeta } = await contextManager.prepareChatMessages(req);
 
     const manager = getProviderManager();
-    const result = await manager.executeWithFallback('chat', {
-      model: internalModel,
+    const result = await manager.executeRoute('chat', {
+      model,
       messages: messagesForModel || messages,
       temperature,
       maxTokens: max_tokens,
@@ -156,7 +153,17 @@ router.post('/chat/completions', async (req, res, next) => {
 router.post('/embeddings', async (req, res, next) => {
   try {
     const { input, model } = req.body || {};
-    const embeddingModel = model || process.env.CONTEXT_EMBEDDING_MODEL || 'auto';
+    const embeddingModel = model || process.env.CONTEXT_EMBEDDING_MODEL;
+
+    if (!embeddingModel) {
+      return res.status(400).json({
+        error: {
+          message: 'model parameter is required for embeddings (e.g. "gemini:models/embedding-001").',
+          type: 'invalid_request_error',
+          code: 400,
+        },
+      });
+    }
 
     if (typeof input !== 'string' && !Array.isArray(input)) {
       return res.status(400).json({
@@ -176,7 +183,7 @@ router.post('/embeddings', async (req, res, next) => {
 
     for (let i = 0; i < items.length; i++) {
       const text = String(items[i] || '');
-      const result = await manager.executeWithFallback('embedding', {
+      const result = await manager.executeRoute('embedding', {
         model: embeddingModel,
         text,
       });

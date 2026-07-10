@@ -33,8 +33,6 @@ class GeminiProvider extends BaseProvider {
     super('gemini', ['chat', 'completion', 'embedding']);
     this.apiKey = process.env.GEMINI_API_KEY;
     this.baseURL = 'https://generativelanguage.googleapis.com/v1beta';
-    this.defaultModel = 'gemini-2.0-flash';
-    this.defaultEmbeddingModel = 'models/embedding-001';
   }
 
   isConfigured() {
@@ -58,7 +56,8 @@ class GeminiProvider extends BaseProvider {
 
   async handleChat(params) {
     const messages = params.messages || [{ role: 'user', content: params.prompt }];
-    const model = params.model || this.defaultModel;
+    const model = params.model;
+    if (!model) throw new Error('GeminiProvider requires params.model');
     const systemText = normalizeSystem(messages);
     const contents = toGeminiContents(messages);
 
@@ -99,7 +98,8 @@ class GeminiProvider extends BaseProvider {
   }
 
   async handleEmbedding(params) {
-    const model = params.model || this.defaultEmbeddingModel;
+    const model = params.model;
+    if (!model) throw new Error('GeminiProvider requires params.model for embedding');
     const url = `${this.baseURL}/models/${encodeURIComponent(model)}:embedContent?key=${encodeURIComponent(this.apiKey)}`;
 
     const payload = {

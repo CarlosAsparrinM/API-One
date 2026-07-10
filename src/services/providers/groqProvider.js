@@ -7,7 +7,6 @@ class GroqProvider extends BaseProvider {
     super('groq', ['chat', 'completion']);
     this.apiKey = process.env.GROQ_API_KEY;
     this.baseURL = 'https://api.groq.com/openai/v1';
-    this.defaultModel = process.env.GROQ_MODEL || 'llama-3.3-70b-versatile';
   }
 
   isConfigured() {
@@ -36,8 +35,9 @@ class GroqProvider extends BaseProvider {
   }
 
   async handleCompletion(client, params) {
+    if (!params.model) throw new Error('GroqProvider requires params.model');
     const payload = {
-      model: params.model || this.defaultModel,
+      model: params.model,
       messages: params.messages || [{ role: 'user', content: params.prompt }],
       temperature: params.temperature ?? 0.7,
       max_tokens: params.maxTokens ?? 2000,

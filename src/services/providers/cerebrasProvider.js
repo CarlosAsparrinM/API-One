@@ -7,7 +7,6 @@ class CerebrasProvider extends BaseProvider {
     super('cerebras', ['chat', 'completion']);
     this.apiKey = process.env.CEREBRAS_API_KEY;
     this.baseURL = 'https://api.cerebras.ai/v1';
-    this.defaultModel = process.env.CEREBRAS_MODEL || 'gpt-oss-120b';
   }
 
   isConfigured() {
@@ -35,8 +34,9 @@ class CerebrasProvider extends BaseProvider {
   }
 
   async handleCompletion(client, params) {
+    if (!params.model) throw new Error('CerebrasProvider requires params.model');
     const payload = {
-      model: params.model || this.defaultModel,
+      model: params.model,
       messages: params.messages || [{ role: 'user', content: params.prompt }],
       temperature: params.temperature || 0.7,
       max_tokens: params.maxTokens || 2000,
